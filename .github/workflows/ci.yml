@@ -8,29 +8,53 @@ on:
 
 jobs:
   build-and-test:
-    name: build & test (Arch Linux, LLVM/MLIR 22)
-    runs-on: ubuntu-latest
-    # The toy depends on MLIR ≥ 22 APIs (BytecodeOpInterface auto-traits,
-    # `OpTy::create` static factories, etc.). Arch ships matching `llvm` /
-    # `mlir` packages out of the box — exactly the dev environment.
-    container:
-      image: archlinux:latest
+    name: build & test (Ubuntu 24.04, LLVM/MLIR 22 from apt.llvm.org)
+    runs-on: ubuntu-24.04
+    env:
+      LLVM_VERSION: "22"
 
     steps:
-      - name: Install toolchain
-        # `--needed` skips already-installed packages (none in the base image,
-        # but cheap insurance). `archlinux-keyring` is refreshed first so that
-        # signed-package verification doesn't fail on aging snapshots.
-        run: |
-          pacman -Sy --noconfirm archlinux-keyring
-          pacman -Syu --noconfirm --needed \
-            git base-devel cmake ninja llvm mlir clang lld
-
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install LLVM/MLIR ${{ env.LLVM_VERSION }} (apt.llvm.org)
+        # `llvm.sh all` adds the apt.llvm.org repo for the host's Ubuntu
+        # codename and installs every component (clang, lld, mlir, …) for
+        # the requested major version. Runs as root inside the script.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            wget gnupg ca-certificates lsb-release software-properties-common
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash /tmp/llvm.sh ${LLVM_VERSION} all
+
+      - name: Install build tooling
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build python3-lit gcc
+
+      - name: Symlink LLVM ${{ env.LLVM_VERSION }} tools onto unversioned names
+        # The project's CMake / lit setup looks for unversioned binaries
+        # (FileCheck, mlir-translate, mlir-opt, …). apt.llvm.org installs
+        # them as `<tool>-22`, so add the missing symlinks.
+        run: |
+          for t in FileCheck mlir-translate mlir-opt mlir-tblgen llc \
+                   clang clang++ lld; do
+            src=/usr/bin/${t}-${LLVM_VERSION}
+            dst=/usr/local/bin/${t}
+            if [ -x "$src" ] && [ ! -e "$dst" ]; then
+              sudo ln -s "$src" "$dst"
+            fi
+          done
+
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        # The apt.llvm.org packages stage everything under
+        # /usr/lib/llvm-22; point find_package() there explicitly.
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMLIR_DIR=/usr/lib/llvm-${LLVM_VERSION}/lib/cmake/mlir \
+            -DLLVM_DIR=/usr/lib/llvm-${LLVM_VERSION}/lib/cmake/llvm
 
       - name: Build
         run: cmake --build build -j
