@@ -19,14 +19,16 @@ jobs:
 
       - name: Install LLVM/MLIR ${{ env.LLVM_VERSION }} (apt.llvm.org)
         # `llvm.sh all` adds the apt.llvm.org repo for the host's Ubuntu
-        # codename and installs every component (clang, lld, mlir, …) for
-        # the requested major version. Runs as root inside the script.
+        # codename and installs clang/lld/llvm-dev/etc. — but NOT MLIR;
+        # those packages have to be requested explicitly.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             wget gnupg ca-certificates lsb-release software-properties-common
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           sudo bash /tmp/llvm.sh ${LLVM_VERSION} all
+          sudo apt-get install -y --no-install-recommends \
+            libmlir-${LLVM_VERSION}-dev mlir-${LLVM_VERSION}-tools
 
       - name: Install build tooling
         # Ubuntu 24.04 doesn't ship `python3-lit` in main; install it
