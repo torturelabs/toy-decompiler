@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: build & test (Arch Linux, LLVM/MLIR 22)
+    runs-on: ubuntu-latest
+    # The toy depends on MLIR ≥ 22 APIs (BytecodeOpInterface auto-traits,
+    # `OpTy::create` static factories, etc.). Arch ships matching `llvm` /
+    # `mlir` packages out of the box — exactly the dev environment.
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install toolchain
+        # `--needed` skips already-installed packages (none in the base image,
+        # but cheap insurance). `archlinux-keyring` is refreshed first so that
+        # signed-package verification doesn't fail on aging snapshots.
+        run: |
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm --needed \
+            git base-devel cmake ninja llvm mlir clang lld
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Run lit tests
+        run: cmake --build build --target check-toy-decompiler

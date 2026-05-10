@@ -1,5 +1,7 @@
 # toy-decompiler
 
+[![ci](https://github.com/torturelabs/toy-decompiler/actions/workflows/ci.yml/badge.svg)](https://github.com/torturelabs/toy-decompiler/actions/workflows/ci.yml)
+
 A toy ARM32 (A32) decompiler built on **MLIR** + **LLVM** + ideas vendored
 from **QEMU**. The full pipeline:
 
