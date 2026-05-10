@@ -1,0 +1,8 @@
+set(LLVM_TARGET_DEFINITIONS ArmOps.td)
+mlir_tablegen(ArmOps.h.inc -gen-op-decls)
+mlir_tablegen(ArmOps.cpp.inc -gen-op-defs)
+mlir_tablegen(ArmOpsDialect.h.inc -gen-dialect-decls -dialect=arm)
+mlir_tablegen(ArmOpsDialect.cpp.inc -gen-dialect-defs -dialect=arm)
+mlir_tablegen(ArmOpsEnums.h.inc -gen-enum-decls)
+mlir_tablegen(ArmOpsEnums.cpp.inc -gen-enum-defs)
+add_public_tablegen_target(MLIRArmOpsIncGen)

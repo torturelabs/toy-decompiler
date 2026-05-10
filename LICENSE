@@ -1,0 +1,10 @@
+                  GNU GENERAL PUBLIC LICENSE
+                     Version 2, June 1991
+
+This project as a whole is licensed under GPLv2 because it vendors two
+files from QEMU (`scripts/decodetree.py` GPLv2-or-later, and
+`target/arm/tcg/a32.decode` LGPLv2.1-or-later); see
+`third_party/qemu/README.md` for upstream pointers and commit hashes.
+
+For the full text of the GNU General Public License version 2, see
+<https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt>.

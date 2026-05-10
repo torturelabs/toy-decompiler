@@ -1,0 +1,302 @@
+// Hand-written A32 instruction semantics. Included into Decoder.cpp via
+// the same `extern "C"` block as the QEMU decode-tree-generated dispatch.
+//
+// Each `trans_*` here MUST also be listed in SemanticsExcluded.txt so the
+// auto-stub generator skips it (otherwise we get duplicate definitions at
+// link time).
+//
+// Conventions:
+//   - For instructions where AL is the only meaningful cond (e.g. BX), we
+//     punt non-AL with `arm.unhandled` and a `/cond` suffix.
+//   - For all other instructions, non-AL conds are handled via `CondGuard`:
+//     the conditionally-executed body is wrapped in a cf.cond_br + ^body +
+//     ^after pattern, with register-file state carried through ^after's
+//     block arguments.
+//   - We refuse PC-relative reads (rn/rm == 15) and shifted operands in
+//     the simplest forms; those land as `arm.unhandled` until M3-ext
+//     widens coverage.
+
+static unsigned arm_lift_get_cond(const DisasContext *ctx) {
+  return (ctx->insn >> 28) & 0xFu;
+}
+
+// Punt instructions with bits[31:28] == 0xF (the A32 "uncond extension"
+// space — BLX_imm, etc.). Still useful even with CondGuard support
+// because those encodings have *different* semantics, not just predicates.
+#define ARM_REQUIRE_NORMAL_COND(ctx, mnemonic)                                 \
+  do {                                                                         \
+    if (arm_lift_get_cond(ctx) == 0xFu) {                                      \
+      arm_lift_unhandled((ctx), mnemonic "/cond_ext");                         \
+      return true;                                                             \
+    }                                                                          \
+  } while (0)
+
+// MOV rd, #imm  (rotated immediate, MOV_rxi).
+static bool trans_MOV_rxi(DisasContext *ctx, arg_MOV_rxi *a) {
+  ARM_REQUIRE_NORMAL_COND(ctx, "MOV_rxi");
+  if (a->s) {
+    arm_lift_unhandled(ctx, "MOVS_rxi");
+    return true;
+  }
+  if (a->rd == 15) {
+    arm_lift_unhandled(ctx, "MOV_rxi/pc");
+    return true;
+  }
+  ::lift::Lifter *L = ctx->lifter;
+  if (!L)
+    return true;
+  uint32_t value = ((uint32_t)a->imm >> (a->rot * 2)) |
+                   ((uint32_t)a->imm << ((32 - a->rot * 2) & 31));
+  auto buildBody = [&]() {
+    auto cst = ::mlir::arith::ConstantIntOp::create(L->builder(), L->loc(),
+                                                    L->i32(), value);
+    L->setReg(a->rd, cst.getResult());
+  };
+  ::lift::Cond cond = ::lift::condOf(ctx->insn);
+  if (cond == ::lift::Cond::AL) {
+    buildBody();
+  } else {
+    ::mlir::Value cb = L->emitCondCheck(cond);
+    ::lift::CondGuard guard(*L, cb);
+    buildBody();
+  }
+  return true;
+}
+
+// MOV rd, rm  (register form, no shift; MOV_rxri).
+static bool trans_MOV_rxri(DisasContext *ctx, arg_MOV_rxri *a) {
+  ARM_REQUIRE_NORMAL_COND(ctx, "MOV_rxri");
+  if (a->s || a->shty != 0 || a->shim != 0) {
+    arm_lift_unhandled(ctx, "MOV_rxri/shift");
+    return true;
+  }
+  if (a->rd == 15 || a->rm == 15) {
+    arm_lift_unhandled(ctx, "MOV_rxri/pc");
+    return true;
+  }
+  ::lift::Lifter *L = ctx->lifter;
+  if (!L)
+    return true;
+  unsigned rd = a->rd, rm = a->rm;
+  ::lift::Cond cond = ::lift::condOf(ctx->insn);
+  if (cond == ::lift::Cond::AL) {
+    L->setReg(rd, L->reg(rm));
+  } else {
+    ::mlir::Value cb = L->emitCondCheck(cond);
+    ::lift::CondGuard guard(*L, cb);
+    L->setReg(rd, L->reg(rm));
+  }
+  return true;
+}
+
+// ADD rd, rn, rm  (register form, no shift; ADD_rrri).
+static bool trans_ADD_rrri(DisasContext *ctx, arg_ADD_rrri *a) {
+  ARM_REQUIRE_NORMAL_COND(ctx, "ADD_rrri");
+  if (a->s || a->shty != 0 || a->shim != 0) {
+    arm_lift_unhandled(ctx, "ADD_rrri/shift");
+    return true;
+  }
+  if (a->rd == 15 || a->rn == 15 || a->rm == 15) {
+    arm_lift_unhandled(ctx, "ADD_rrri/pc");
+    return true;
+  }
+  ::lift::Lifter *L = ctx->lifter;
+  if (!L)
+    return true;
+  unsigned rd = a->rd, rn = a->rn, rm = a->rm;
+  auto buildBody = [&]() {
+    auto add = ::mlir::arm::AddOp::create(L->builder(), L->loc(), L->i32(),
+                                          L->reg(rn), L->reg(rm));
+    L->setReg(rd, add.getResult());
+  };
+  ::lift::Cond cond = ::lift::condOf(ctx->insn);
+  if (cond == ::lift::Cond::AL) {
+    buildBody();
+  } else {
+    ::mlir::Value cb = L->emitCondCheck(cond);
+    ::lift::CondGuard guard(*L, cb);
+    buildBody();
+  }
+  return true;
+}
+
+// SUB rd, rn, #imm  (rotated immediate; SUB_rri).
+static bool trans_SUB_rri(DisasContext *ctx, arg_SUB_rri *a) {
+  ARM_REQUIRE_NORMAL_COND(ctx, "SUB_rri");
+  if (a->s) {
+    arm_lift_unhandled(ctx, "SUBS_rri");
+    return true;
+  }
+  if (a->rd == 15 || a->rn == 15) {
+    arm_lift_unhandled(ctx, "SUB_rri/pc");
+    return true;
+  }
+  ::lift::Lifter *L = ctx->lifter;
+  if (!L)
+    return true;
+  uint32_t imm = ((uint32_t)a->imm >> (a->rot * 2)) |
+                 ((uint32_t)a->imm << ((32 - a->rot * 2) & 31));
+  unsigned rd = a->rd, rn = a->rn;
+  auto buildBody = [&]() {
+    auto cst = ::mlir::arith::ConstantIntOp::create(L->builder(), L->loc(),
+                                                    L->i32(), (int64_t)(int32_t)imm);
+    auto sub = ::mlir::arm::SubOp::create(L->builder(), L->loc(), L->i32(),
+                                          L->reg(rn), cst.getResult());
+    L->setReg(rd, sub.getResult());
+  };
+  ::lift::Cond cond = ::lift::condOf(ctx->insn);
+  if (cond == ::lift::Cond::AL) {
+    buildBody();
+  } else {
+    ::mlir::Value cb = L->emitCondCheck(cond);
+    ::lift::CondGuard guard(*L, cb);
+    buildBody();
+  }
+  return true;
+}
+
+// SUB rd, rn, rm  (register form, no shift; SUB_rrri).
+static bool trans_SUB_rrri(DisasContext *ctx, arg_SUB_rrri *a) {
+  ARM_REQUIRE_NORMAL_COND(ctx, "SUB_rrri");
+  if (a->s || a->shty != 0 || a->shim != 0) {
+    arm_lift_unhandled(ctx, "SUB_rrri/shift");
+    return true;
+  }
+  if (a->rd == 15 || a->rn == 15 || a->rm == 15) {
+    arm_lift_unhandled(ctx, "SUB_rrri/pc");
+    return true;
+  }
+  ::lift::Lifter *L = ctx->lifter;
+  if (!L)
+    return true;
+  unsigned rd = a->rd, rn = a->rn, rm = a->rm;
+  auto buildBody = [&]() {
+    auto sub = ::mlir::arm::SubOp::create(L->builder(), L->loc(), L->i32(),
+                                          L->reg(rn), L->reg(rm));
+    L->setReg(rd, sub.getResult());
+  };
+  ::lift::Cond cond = ::lift::condOf(ctx->insn);
+  if (cond == ::lift::Cond::AL) {
+    buildBody();
+  } else {
+    ::mlir::Value cb = L->emitCondCheck(cond);
+    ::lift::CondGuard guard(*L, cb);
+    buildBody();
+  }
+  return true;
+}
+
+// CMP rn, #imm  (rotated immediate; CMP_xri). rd is unused; s is implicit.
+static bool trans_CMP_xri(DisasContext *ctx, arg_CMP_xri *a) {
+  ARM_REQUIRE_NORMAL_COND(ctx, "CMP_xri");
+  if (a->rn == 15) {
+    arm_lift_unhandled(ctx, "CMP_xri/pc");
+    return true;
+  }
+  ::lift::Lifter *L = ctx->lifter;
+  if (!L)
+    return true;
+  uint32_t imm = ((uint32_t)a->imm >> (a->rot * 2)) |
+                 ((uint32_t)a->imm << ((32 - a->rot * 2) & 31));
+  unsigned rn = a->rn;
+  auto buildBody = [&]() {
+    auto immV = ::mlir::arith::ConstantIntOp::create(
+        L->builder(), L->loc(), L->i32(), (int64_t)(int32_t)imm);
+    L->emitFlagsFromSub(L->reg(rn), immV.getResult());
+  };
+  ::lift::Cond cond = ::lift::condOf(ctx->insn);
+  if (cond == ::lift::Cond::AL) {
+    buildBody();
+  } else {
+    ::mlir::Value cb = L->emitCondCheck(cond);
+    ::lift::CondGuard guard(*L, cb);
+    buildBody();
+  }
+  return true;
+}
+
+// CMP rn, rm  (register, no shift; CMP_xrri).
+static bool trans_CMP_xrri(DisasContext *ctx, arg_CMP_xrri *a) {
+  ARM_REQUIRE_NORMAL_COND(ctx, "CMP_xrri");
+  if (a->shty != 0 || a->shim != 0) {
+    arm_lift_unhandled(ctx, "CMP_xrri/shift");
+    return true;
+  }
+  if (a->rn == 15 || a->rm == 15) {
+    arm_lift_unhandled(ctx, "CMP_xrri/pc");
+    return true;
+  }
+  ::lift::Lifter *L = ctx->lifter;
+  if (!L)
+    return true;
+  unsigned rn = a->rn, rm = a->rm;
+  auto buildBody = [&]() { L->emitFlagsFromSub(L->reg(rn), L->reg(rm)); };
+  ::lift::Cond cond = ::lift::condOf(ctx->insn);
+  if (cond == ::lift::Cond::AL) {
+    buildBody();
+  } else {
+    ::mlir::Value cb = L->emitCondCheck(cond);
+    ::lift::CondGuard guard(*L, cb);
+    buildBody();
+  }
+  return true;
+}
+
+// B label  — direct branch (cond=AL → unconditional, else conditional).
+// Branches with statically-resolvable targets become `cf.br` / `cf.cond_br`
+// to the per-leader block allocated by the lifter's main loop. External
+// targets (outside the lifted span) fall back to `arm.unhandled` plus a
+// fall-through, since we have no story for inter-procedural control flow
+// yet.
+static bool trans_B(DisasContext *ctx, arg_B *a) {
+  ARM_REQUIRE_NORMAL_COND(ctx, "B");
+  ::lift::Lifter *L = ctx->lifter;
+  if (!L)
+    return true;
+  uint32_t target = ctx->pc + 8u + (uint32_t)a->imm;
+  ::mlir::Block *destBlock = L->blockFor(target);
+  ::mlir::Block *fallBlock = L->blockFor(ctx->pc + 4u);
+  ::lift::Cond cond = ::lift::condOf(ctx->insn);
+
+  if (!destBlock) {
+    arm_lift_unhandled(ctx, "B/external");
+    if (fallBlock)
+      L->emitBranchTo(fallBlock);
+    return true;
+  }
+  if (cond == ::lift::Cond::AL) {
+    L->emitBranchTo(destBlock);
+    return true;
+  }
+  if (!fallBlock) {
+    arm_lift_unhandled(ctx, "B/no-fall");
+    L->emitBranchTo(destBlock);
+    return true;
+  }
+  ::mlir::Value cb = L->emitCondCheck(cond);
+  L->emitCondBranch(cb, destBlock, fallBlock);
+  return true;
+}
+
+// BX rm  — function return when rm == lr (14). Anything else (computed
+// branch) is M3-ext-future scope.
+static bool trans_BX(DisasContext *ctx, arg_BX *a) {
+  ARM_REQUIRE_NORMAL_COND(ctx, "BX");
+  if (arm_lift_get_cond(ctx) != 0xEu) {
+    arm_lift_unhandled(ctx, "BX/cond");
+    return true;
+  }
+  ::lift::Lifter *L = ctx->lifter;
+  if (!L)
+    return true;
+  if (a->rm != 14) {
+    arm_lift_unhandled(ctx, "BX/non-lr");
+    return true;
+  }
+  ::mlir::func::ReturnOp::create(L->builder(), L->loc(),
+                                 ::mlir::ValueRange{L->reg(0)});
+  L->markTerminated();
+  return true;
+}
+
+#undef ARM_REQUIRE_NORMAL_COND

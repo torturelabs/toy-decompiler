@@ -1,0 +1,12 @@
+# trans_* names hand-implemented in Semantics.def. The build's
+# decoder-stub generator skips these so we don't emit duplicate
+# definitions.
+trans_MOV_rxi
+trans_MOV_rxri
+trans_ADD_rrri
+trans_SUB_rri
+trans_SUB_rrri
+trans_CMP_xri
+trans_CMP_xrri
+trans_B
+trans_BX
